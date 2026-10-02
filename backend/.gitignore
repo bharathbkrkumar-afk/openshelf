@@ -1,17 +1,24 @@
-# Python virtual environment
+# Python virtual environment and caches
 .venv/
 venv/
 __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
+.pytest_cache/
+.mypy_cache/
+.pyre/
 
-# Local runtime data
+# Local runtime data and private files
 uploads/
 tmp/
 temp/
 *.tmp
+*.temp
 *.pdf
+*.db
+*.sqlite3
+*.log
 
 # Environment files
 .env

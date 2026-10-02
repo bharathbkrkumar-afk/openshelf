@@ -111,3 +111,14 @@ The frontend will be available at:
 - The backend is a minimal FastAPI foundation for the next milestones.
 - The frontend is a Vite + React + TypeScript app with a simple landing page for the project foundation.
 - Later milestones will add book search, PDF validation, and safety checks.
+
+## Milestone 2: Book search
+
+Milestone 2 adds a book search flow using the free Open Library Search API.
+
+- Search by title or author from the React frontend
+- Call the FastAPI backend endpoint at `/api/books/search`
+- Show the book title, author list, cover image when available, and publication year
+- Show legitimate Open Library links when available
+- Handle empty searches, loading states, no results, and backend errors
+- Keep the app free and local to Windows
