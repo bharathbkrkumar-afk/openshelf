@@ -42,18 +42,49 @@ def normalize_authors(authors: Any) -> list[str]:
 
 
 def build_access(access_type: str, custom_note: str | None = None) -> dict[str, Any]:
-    if access_type == "full_text":
+    normalized_type = access_type.strip().lower()
+    if normalized_type == "full_text":
         note = custom_note or "Full text is available from a supported source."
-    elif access_type == "preview":
+        access_flags = {
+            "full_text_available": True,
+            "preview_only": False,
+            "borrow_available": False,
+            "no_verified_full_text": False,
+        }
+    elif normalized_type == "preview":
         note = custom_note or "Preview is available from a supported source."
+        access_flags = {
+            "full_text_available": False,
+            "preview_only": True,
+            "borrow_available": False,
+            "no_verified_full_text": False,
+        }
+    elif normalized_type == "borrow":
+        note = custom_note or "Borrowing is available, but the full text is not confirmed as a free download."
+        access_flags = {
+            "full_text_available": False,
+            "preview_only": False,
+            "borrow_available": True,
+            "no_verified_full_text": False,
+        }
     else:
         note = custom_note or "No suitable free full-text version was found from our supported sources."
+        access_flags = {
+            "full_text_available": False,
+            "preview_only": False,
+            "borrow_available": False,
+            "no_verified_full_text": True,
+        }
 
-    return {
-        "full_text": access_type == "full_text",
-        "preview": access_type == "preview",
+    payload: dict[str, Any] = {
+        **access_flags,
+        "full_text": access_flags["full_text_available"],
+        "preview": access_flags["preview_only"],
         "note": note,
     }
+    if access_flags["borrow_available"]:
+        payload["borrow"] = True
+    return payload
 
 
 def build_source_links(book: dict[str, Any], provider: str = "Open Library") -> list[dict[str, str]]:
@@ -92,14 +123,17 @@ def build_source_links(book: dict[str, Any], provider: str = "Open Library") -> 
 def classify_access(item: dict[str, Any]) -> dict[str, Any]:
     availability = item.get("availability") if isinstance(item.get("availability"), dict) else {}
     status = str(availability.get("status") or "").lower()
-    has_fulltext = bool(item.get("has_fulltext")) or bool(item.get("ia"))
-    preview = "preview" in status or "limited" in status
+    has_fulltext = bool(item.get("has_fulltext"))
+    ia_value = item.get("ia")
+    has_archive_text = bool(ia_value) and not isinstance(ia_value, (list, tuple)) or isinstance(ia_value, (list, tuple)) and bool(ia_value)
 
-    if has_fulltext:
-        return build_access("full_text")
-    if preview:
-        return build_access("preview")
-    return build_access("unavailable")
+    if "borrow" in status or "borrowable" in status or status == "borrow_available":
+        return build_access("borrow", "Borrowing is available, but this is not a verified free full-text download.")
+    if has_fulltext or has_archive_text:
+        return build_access("full_text", "Full text is available from a supported source.")
+    if "preview" in status or "limited" in status:
+        return build_access("preview", "Preview is available from a supported source.")
+    return build_access("unavailable", "No verified full-text version was found from our supported sources.")
 
 
 def deduplicate_results(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -153,15 +187,21 @@ async def search_open_library(query_value: str) -> list[dict[str, Any]]:
             ia_identifier = ia_value.strip()
 
         status = str((item.get("availability") or {}).get("status") or "").lower()
+        has_fulltext = bool(item.get("has_fulltext"))
         source_links = build_source_links(item, "Open Library")
-        if ia_identifier:
+
+        if "borrow" in status or "borrowable" in status or status == "borrow_available":
+            access = build_access("borrow", "Borrowing is available, but this is not a verified free full-text download.")
+        elif ia_identifier and has_fulltext:
             source_links.append({"label": "Internet Archive", "url": f"https://archive.org/details/{ia_identifier}"})
             source_links = list({link["url"]: link for link in source_links}.values())
             access = build_access("full_text", "Full text is available from Internet Archive.")
-        elif "preview" in status or "limited" in status:
+        elif has_fulltext:
+            access = build_access("full_text", "Full text is available from Open Library.")
+        elif "preview" in status or "limited" in status or status in {"partial", "sample"}:
             access = build_access("preview", "Preview is available from Open Library.")
         else:
-            access = build_access("unavailable")
+            access = build_access("unavailable", "No suitable free full-text version was found from our supported sources.")
 
         result = {
             "provider": "Open Library",
@@ -204,15 +244,34 @@ async def search_google_books(query_value: str) -> list[dict[str, Any]]:
         viewability = str(access_info.get("viewability") or "").upper()
         access_view_status = str(access_info.get("accessViewStatus") or "").upper()
         preview_link = access_info.get("webReaderLink") or access_info.get("previewLink")
-        if access_view_status in {"FULL_PUBLIC_DOMAIN", "FULLY_AVAILABLE"}:
+        pdf_info = access_info.get("pdf") if isinstance(access_info.get("pdf"), dict) else {}
+        epub_info = access_info.get("epub") if isinstance(access_info.get("epub"), dict) else {}
+        pdf_download_link = pdf_info.get("downloadLink") if isinstance(pdf_info.get("downloadLink"), str) else None
+        epub_download_link = epub_info.get("downloadLink") if isinstance(epub_info.get("downloadLink"), str) else None
+        pdf_access_link = pdf_info.get("acsTokenLink") if isinstance(pdf_info.get("acsTokenLink"), str) else pdf_download_link
+        epub_access_link = epub_info.get("acsTokenLink") if isinstance(epub_info.get("acsTokenLink"), str) else epub_download_link
+
+        pdf_is_available = bool(pdf_info.get("isAvailable"))
+        epub_is_available = bool(epub_info.get("isAvailable"))
+        has_verified_full_text = bool(pdf_access_link or epub_access_link) and (
+            (
+                access_view_status in {"FULL_PUBLIC_DOMAIN", "FULLY_AVAILABLE"}
+                and (pdf_is_available or epub_is_available)
+            )
+            or (viewability == "ALL_PAGES" and (pdf_is_available or epub_is_available))
+        )
+        if has_verified_full_text:
             access_type = "full_text"
             note = "Full text is available from Google Books."
-        elif viewability in {"PARTIAL", "ALL_PAGES", "SAMPLE"} or bool(preview_link):
+            source_url = pdf_access_link or epub_access_link or str(preview_link or item.get("selfLink") or "")
+        elif viewability in {"PARTIAL", "NO_PAGES", "SAMPLE"} or bool(preview_link):
             access_type = "preview"
             note = "Preview is available from Google Books."
+            source_url = str(preview_link or item.get("selfLink") or "")
         else:
             access_type = "unavailable"
             note = "No suitable free full-text version was found from our supported sources."
+            source_url = str(preview_link or item.get("selfLink") or "")
 
         results.append(
             {
@@ -221,7 +280,7 @@ async def search_google_books(query_value: str) -> list[dict[str, Any]]:
                 "authors": authors,
                 "publication_year": volume_info.get("publishedDate")[:4] if isinstance(volume_info.get("publishedDate"), str) and volume_info.get("publishedDate") else None,
                 "cover_url": (volume_info.get("imageLinks") or {}).get("thumbnail"),
-                "source_links": [{"label": "Google Books", "url": str(preview_link or item.get("selfLink") or "")}],
+                "source_links": [{"label": "Google Books", "url": source_url}] if source_url else [],
                 "access": build_access(access_type, note),
             }
         )

@@ -8,8 +8,13 @@ type SourceLink = {
 }
 
 type AccessInfo = {
-  full_text: boolean
-  preview: boolean
+  full_text_available: boolean
+  preview_only: boolean
+  borrow_available: boolean
+  no_verified_full_text: boolean
+  full_text?: boolean
+  preview?: boolean
+  borrow?: boolean
   note: string
 }
 
@@ -24,6 +29,42 @@ type BookResult = {
 }
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000'
+const GOOGLE_PDF_SEARCH_URL = 'https://www.google.com/search'
+
+function parseSearchTitleAndAuthor(searchText: string | null | undefined) {
+  const trimmedSearch = searchText?.trim() ?? ''
+  if (!trimmedSearch) {
+    return { title: '', author: '' }
+  }
+
+  const splitPattern = /\s[-—–]\s|\s\|\s/
+  const splitMatch = trimmedSearch.split(splitPattern)
+  if (splitMatch.length >= 2) {
+    const [title, ...rest] = splitMatch
+    return {
+      title: title.trim(),
+      author: rest.join(' ').trim(),
+    }
+  }
+
+  return { title: trimmedSearch, author: '' }
+}
+
+function buildGooglePdfSearchUrl(searchText: string | null | undefined) {
+  const { title, author } = parseSearchTitleAndAuthor(searchText)
+  if (!title) {
+    return null
+  }
+
+  const queryParts = [`"${title}"`]
+  if (author) {
+    queryParts.push(`"${author}"`)
+  }
+  queryParts.push('filetype:pdf')
+
+  const params = new URLSearchParams({ q: queryParts.join(' ') })
+  return `${GOOGLE_PDF_SEARCH_URL}?${params.toString()}`
+}
 
 function App() {
   const [query, setQuery] = useState('')
@@ -41,6 +82,11 @@ function App() {
       setError('Please enter a book title or author.')
       setHasSearched(true)
       return
+    }
+
+    const googlePdfUrl = buildGooglePdfSearchUrl(trimmedQuery)
+    if (googlePdfUrl) {
+      window.open(googlePdfUrl, '_blank', 'noopener,noreferrer')
     }
 
     setLoading(true)
@@ -106,12 +152,42 @@ function App() {
 
       {loading && <p className="status-message">Loading books...</p>}
 
+      {hasSearched && !loading && query.trim() ? (
+        (() => {
+          const pdfSearchUrl = buildGooglePdfSearchUrl(query)
+          if (!pdfSearchUrl) {
+            return null
+          }
+
+          return (
+            <div className="pdf-search-bar">
+              <p>Leave OpenShelf and open Google to search for public PDF copies in a new tab.</p>
+              <a href={pdfSearchUrl} target="_blank" rel="noreferrer">
+                Find Book PDFs
+              </a>
+            </div>
+          )
+        })()
+      ) : null}
+
       <section className="results-grid" aria-live="polite">
         {books.map((book, index) => {
+          const access = book.access ?? {
+            full_text_available: false,
+            preview_only: false,
+            borrow_available: false,
+            no_verified_full_text: true,
+            note: 'No verified full-text version was found from our supported sources.',
+          }
+
           const accessTags = [
-            book.access?.full_text ? 'FULL TEXT' : null,
-            book.access?.preview ? 'PREVIEW' : null,
+            access.full_text_available ? 'FULL TEXT' : null,
+            access.preview_only ? 'PREVIEW ONLY' : null,
+            access.borrow_available ? 'BORROW AVAILABLE' : null,
+            access.no_verified_full_text ? 'NO VERIFIED FULL TEXT' : null,
           ].filter(Boolean) as string[]
+
+          const primaryLink = book.source_links[0]
 
           return (
             <article
@@ -143,13 +219,23 @@ function App() {
                       </span>
                     ))
                   ) : (
-                    <span className="access-pill muted">No suitable free full-text version was found from our supported sources.</span>
+                    <span className="access-pill muted">No verified full-text version was found from our supported sources.</span>
                   )}
                 </div>
 
-                {book.access?.note ? (
-                  <p className="access-note">{book.access.note}</p>
+                {access.full_text_available && primaryLink ? (
+                  <a className="primary-action" href={primaryLink.url} target="_blank" rel="noreferrer">
+                    Read Full Book
+                  </a>
                 ) : null}
+
+                {access.preview_only && primaryLink ? (
+                  <a className="secondary-action" href={primaryLink.url} target="_blank" rel="noreferrer">
+                    Preview Only
+                  </a>
+                ) : null}
+
+                {access.note ? <p className="access-note">{access.note}</p> : null}
 
                 {book.source_links.length > 0 ? (
                   <div className="links-wrap">

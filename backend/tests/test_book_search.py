@@ -309,3 +309,195 @@ def test_provider_error_does_not_break_other_providers(monkeypatch) -> None:
     payload = response.json()
     assert payload["count"] == 1
     assert payload["provider_errors"] == ["Open Library"]
+
+
+def test_full_pdf_available_sets_verified_full_text(monkeypatch) -> None:
+    async def fake_get(self, *args, **kwargs):
+        class Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "items": [
+                        {
+                            "volumeInfo": {
+                                "title": "Full PDF Book",
+                                "authors": ["Author One"],
+                                "publishedDate": "2024-01-01",
+                            },
+                            "accessInfo": {
+                                "viewability": "ALL_PAGES",
+                                "pdf": {"isAvailable": True, "downloadLink": "https://example.com/full.pdf"},
+                                "epub": {"isAvailable": False},
+                                "webReaderLink": "https://books.google.com/books?id=abc",
+                            },
+                        }
+                    ]
+                }
+
+        return Response()
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+    response = client.get("/api/books/search?q=full pdf book")
+    assert response.status_code == 200
+    payload = response.json()
+    access = payload["results"][0]["access"]
+    assert access["full_text_available"] is True
+    assert access["preview_only"] is False
+    assert access["no_verified_full_text"] is False
+
+
+def test_google_books_preview_only_is_not_full_text(monkeypatch) -> None:
+    async def fake_get(self, *args, **kwargs):
+        class Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "items": [
+                        {
+                            "volumeInfo": {"title": "Preview Only Book", "authors": ["Preview Author"]},
+                            "accessInfo": {
+                                "viewability": "PARTIAL",
+                                "pdf": {"isAvailable": False},
+                                "epub": {"isAvailable": False},
+                                "webReaderLink": "https://books.google.com/books?id=preview",
+                            },
+                        }
+                    ]
+                }
+
+        return Response()
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+    response = client.get("/api/books/search?q=preview book")
+    assert response.status_code == 200
+    payload = response.json()
+    access = payload["results"][0]["access"]
+    assert access["full_text_available"] is False
+    assert access["preview_only"] is True
+    assert access["no_verified_full_text"] is False
+
+
+def test_google_books_all_pages_without_download_link_is_preview_not_full_text(monkeypatch) -> None:
+    async def fake_get(self, *args, **kwargs):
+        class Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "items": [
+                        {
+                            "volumeInfo": {"title": "Misleading Google Book", "authors": ["Author"]},
+                            "accessInfo": {
+                                "viewability": "ALL_PAGES",
+                                "pdf": {"isAvailable": True},
+                                "epub": {"isAvailable": False},
+                                "webReaderLink": "https://books.google.com/books?id=misleading",
+                            },
+                        }
+                    ]
+                }
+
+        return Response()
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+    response = client.get("/api/books/search?q=misleading")
+    assert response.status_code == 200
+    payload = response.json()
+    access = payload["results"][0]["access"]
+    assert access["full_text_available"] is False
+    assert access["preview_only"] is True
+
+
+def test_metadata_catalog_only_is_not_verified_full_text(monkeypatch) -> None:
+    async def fake_get(self, *args, **kwargs):
+        class Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "docs": [
+                        {
+                            "key": "/works/catalog-only",
+                            "title": "Catalog Only Book",
+                            "author_name": ["Catalog Author"],
+                            "availability": {"status": "restricted"},
+                            "edition_key": ["edition-catalog"],
+                        }
+                    ]
+                }
+
+        return Response()
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+    response = client.get("/api/books/search?q=catalog only")
+    assert response.status_code == 200
+    payload = response.json()
+    access = payload["results"][0]["access"]
+    assert access["full_text_available"] is False
+    assert access["preview_only"] is False
+    assert access["no_verified_full_text"] is True
+
+
+def test_borrow_only_access_is_not_free_full_text(monkeypatch) -> None:
+    async def fake_get(self, *args, **kwargs):
+        class Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "docs": [
+                        {
+                            "key": "/works/borrow-only",
+                            "title": "Borrow Only Book",
+                            "author_name": ["Borrow Author"],
+                            "availability": {"status": "borrow_available"},
+                            "edition_key": ["edition-borrow"],
+                        }
+                    ]
+                }
+
+        return Response()
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+    response = client.get("/api/books/search?q=borrow only")
+    assert response.status_code == 200
+    payload = response.json()
+    access = payload["results"][0]["access"]
+    assert access["borrow_available"] is True
+    assert access["full_text_available"] is False
+    assert access["preview_only"] is False
+
+
+def test_missing_or_ambiguous_availability_does_not_assume_full_text(monkeypatch) -> None:
+    async def fake_get(self, *args, **kwargs):
+        class Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "items": [
+                        {
+                            "volumeInfo": {"title": "Ambiguous Book", "authors": ["Ambiguous Author"]},
+                            "accessInfo": {},
+                        }
+                    ]
+                }
+
+        return Response()
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+    response = client.get("/api/books/search?q=ambiguous")
+    assert response.status_code == 200
+    payload = response.json()
+    access = payload["results"][0]["access"]
+    assert access["full_text_available"] is False
+    assert access["no_verified_full_text"] is True
+    assert access["preview_only"] is False
