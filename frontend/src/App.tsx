@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { FormEvent } from 'react'
 import './App.css'
 import PdfScanner from './PdfScanner'
+import PriceComparison from './PriceComparison'
 
 type SourceLink = {
   label: string
@@ -239,6 +240,8 @@ function App() {
                 ) : null}
 
                 {access.note ? <p className="access-note">{access.note}</p> : null}
+
+                <PriceComparison query={`${book.title} ${book.authors.join(' ')}`} />
 
                 {book.source_links.length > 0 ? (
                   <div className="links-wrap">

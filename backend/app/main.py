@@ -9,11 +9,12 @@ from dotenv import load_dotenv
 import httpx
 
 load_dotenv()
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174").split(",")
 from fastapi import FastAPI, HTTPException, Query, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.scanner import process_pdf_upload
+from app.pricing import get_prices
 
 app = FastAPI(
     title="OpenShelf API",
@@ -320,3 +321,17 @@ async def search_books(
 @app.post("/api/scan")
 async def scan_pdf(file: UploadFile = File(...)) -> dict[str, Any]:
     return await process_pdf_upload(file)
+
+@app.get("/api/books/prices")
+async def fetch_prices(
+    q: str | None = Query(default=None, description="Book title or ISBN to search for prices"),
+) -> dict[str, Any]:
+    query_value = (q or "").strip()
+    if not query_value:
+        raise HTTPException(status_code=400, detail="A search query or ISBN is required.")
+
+    try:
+        pricing_result = await get_prices(query_value)
+        return pricing_result.model_dump()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="The price comparison service is unavailable right now.") from exc
