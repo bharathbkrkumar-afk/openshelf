@@ -108,17 +108,16 @@ The frontend will be available at:
 ## Notes
 
 - This repository intentionally does not include secrets or uploaded PDFs.
-- The backend is a minimal FastAPI foundation for the next milestones.
-- The frontend is a Vite + React + TypeScript app with a simple landing page for the project foundation.
-- Later milestones will add book search, PDF validation, and safety checks.
+- The backend is built with FastAPI and requires Python 3.12.
+- The frontend is a Vite + React + TypeScript app.
+- ClamAV is optional but recommended for PDF safety scanning. If installed, the backend will automatically use `clamscan` for threat detection.
 
-## Milestone 2: Book search
+## Run the Tests
 
-Milestone 2 adds a book search flow using the free Open Library Search API.
+To run the automated backend tests using Pytest, activate your virtual environment and run the following command from the `backend` folder:
 
-- Search by title or author from the React frontend
-- Call the FastAPI backend endpoint at `/api/books/search`
-- Show the book title, author list, cover image when available, and publication year
-- Show legitimate Open Library links when available
-- Handle empty searches, loading states, no results, and backend errors
-- Keep the app free and local to Windows
+```powershell
+cd "d:\openshelf\openshelf\backend"
+. ..\.venv\Scripts\Activate.ps1
+pytest tests/
+```

@@ -2,37 +2,50 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
+import os
+import urllib.parse
 
+from dotenv import load_dotenv
 import httpx
-from fastapi import FastAPI, HTTPException, Query
+
+load_dotenv()
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+
+from app.scanner import process_pdf_upload
 
 app = FastAPI(
     title="OpenShelf API",
     description="Book search, validation, and discovery endpoints for OpenShelf.",
-    version="0.2.0",
+    version="0.3.0",
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1|0\.0\.0\.0):(?:\d+)$",
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 OPEN_LIBRARY_SEARCH_URL = "https://openlibrary.org/search.json"
-GOOGLE_BOOKS_SEARCH_URL = "https://www.googleapis.com/books/v1/volumes"
 GUTENDEX_SEARCH_URL = "https://gutendex.com/books"
 INTERNET_ARCHIVE_SEARCH_URL = "https://archive.org/advancedsearch.php"
 MAX_RESULTS = 10
+
 SUPPORTED_PROVIDERS = [
     "Open Library",
-    "Google Books",
-    "Project Gutenberg",
     "Internet Archive",
+    "Project Gutenberg",
+    "Standard Ebooks",
+    "ManyBooks",
+    "Feedbooks Public Domain",
+    "OAPEN",
+    "Directory of Open Access Books",
+    "OpenStax",
+    "Open Textbook Library",
 ]
-
 
 def normalize_authors(authors: Any) -> list[str]:
     if not isinstance(authors, list):
@@ -40,101 +53,34 @@ def normalize_authors(authors: Any) -> list[str]:
     cleaned = [str(name).strip() for name in authors if str(name).strip()]
     return cleaned or ["Unknown author"]
 
-
-def build_access(access_type: str, custom_note: str | None = None) -> dict[str, Any]:
-    normalized_type = access_type.strip().lower()
-    if normalized_type == "full_text":
-        note = custom_note or "Full text is available from a supported source."
-        access_flags = {
-            "full_text_available": True,
-            "preview_only": False,
-            "borrow_available": False,
-            "no_verified_full_text": False,
-        }
-    elif normalized_type == "preview":
-        note = custom_note or "Preview is available from a supported source."
-        access_flags = {
-            "full_text_available": False,
-            "preview_only": True,
-            "borrow_available": False,
-            "no_verified_full_text": False,
-        }
-    elif normalized_type == "borrow":
-        note = custom_note or "Borrowing is available, but the full text is not confirmed as a free download."
-        access_flags = {
-            "full_text_available": False,
-            "preview_only": False,
-            "borrow_available": True,
-            "no_verified_full_text": False,
-        }
+def build_access(category: str, note: str) -> dict[str, Any]:
+    flags = {
+        "is_verified_full_book": False,
+        "is_borrowable": False,
+        "is_preview": False,
+        "is_unverified": False,
+        "free_download": False,
+        "read_online": False,
+    }
+    
+    if category == "FULL_BOOK_VERIFIED_DOWNLOAD":
+        flags["is_verified_full_book"] = True
+        flags["free_download"] = True
+    elif category == "FULL_BOOK_VERIFIED_ONLINE":
+        flags["is_verified_full_book"] = True
+        flags["read_online"] = True
+    elif category == "AUTHORIZED_BORROWING":
+        flags["is_borrowable"] = True
+    elif category == "PREVIEW":
+        flags["is_preview"] = True
     else:
-        note = custom_note or "No suitable free full-text version was found from our supported sources."
-        access_flags = {
-            "full_text_available": False,
-            "preview_only": False,
-            "borrow_available": False,
-            "no_verified_full_text": True,
-        }
+        flags["is_unverified"] = True
 
-    payload: dict[str, Any] = {
-        **access_flags,
-        "full_text": access_flags["full_text_available"],
-        "preview": access_flags["preview_only"],
+    return {
+        **flags,
+        "category": category,
         "note": note,
     }
-    if access_flags["borrow_available"]:
-        payload["borrow"] = True
-    return payload
-
-
-def build_source_links(book: dict[str, Any], provider: str = "Open Library") -> list[dict[str, str]]:
-    links: list[dict[str, str]] = []
-    url = book.get("url") or book.get("preview_url") or book.get("openlibrary_url")
-    if provider == "Open Library":
-        key = book.get("key")
-        if key:
-            links.append({"label": "Open Library", "url": f"https://openlibrary.org{key}"})
-        edition_key = book.get("edition_key")
-        if isinstance(edition_key, list) and edition_key:
-            first_edition = edition_key[0]
-            if first_edition:
-                links.append(
-                    {
-                        "label": "Edition",
-                        "url": f"https://openlibrary.org/books/{first_edition}",
-                    }
-                )
-    elif url:
-        links.append({"label": provider, "url": str(url)})
-
-    if provider == "Open Library" and not links and url:
-        links.append({"label": provider, "url": str(url)})
-
-    deduplicated: list[dict[str, str]] = []
-    seen_urls: set[str] = set()
-    for link in links:
-        url_value = link["url"]
-        if url_value not in seen_urls:
-            seen_urls.add(url_value)
-            deduplicated.append(link)
-    return deduplicated
-
-
-def classify_access(item: dict[str, Any]) -> dict[str, Any]:
-    availability = item.get("availability") if isinstance(item.get("availability"), dict) else {}
-    status = str(availability.get("status") or "").lower()
-    has_fulltext = bool(item.get("has_fulltext"))
-    ia_value = item.get("ia")
-    has_archive_text = bool(ia_value) and not isinstance(ia_value, (list, tuple)) or isinstance(ia_value, (list, tuple)) and bool(ia_value)
-
-    if "borrow" in status or "borrowable" in status or status == "borrow_available":
-        return build_access("borrow", "Borrowing is available, but this is not a verified free full-text download.")
-    if has_fulltext or has_archive_text:
-        return build_access("full_text", "Full text is available from a supported source.")
-    if "preview" in status or "limited" in status:
-        return build_access("preview", "Preview is available from a supported source.")
-    return build_access("unavailable", "No verified full-text version was found from our supported sources.")
-
 
 def deduplicate_results(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     deduplicated: list[dict[str, Any]] = []
@@ -153,15 +99,14 @@ def deduplicate_results(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     return deduplicated
 
-
 async def search_open_library(query_value: str) -> list[dict[str, Any]]:
-    async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
         response = await client.get(
             OPEN_LIBRARY_SEARCH_URL,
             params={
                 "q": query_value,
                 "limit": MAX_RESULTS,
-                "fields": "key,title,author_name,cover_i,first_publish_year,edition_key,has_fulltext,ia,availability",
+                "fields": "key,title,author_name,cover_i,first_publish_year,edition_key,has_fulltext,ia,availability,ebook_access",
             },
         )
         response.raise_for_status()
@@ -175,124 +120,50 @@ async def search_open_library(query_value: str) -> list[dict[str, Any]]:
             continue
         authors = normalize_authors(item.get("author_name"))
         cover_i = item.get("cover_i")
-        cover_url = None
-        if cover_i:
-            cover_url = f"https://covers.openlibrary.org/b/id/{cover_i}-M.jpg"
+        cover_url = f"https://covers.openlibrary.org/b/id/{cover_i}-M.jpg" if cover_i else None
 
         ia_value = item.get("ia")
-        ia_identifier = None
-        if isinstance(ia_value, list) and ia_value:
-            ia_identifier = str(ia_value[0]).strip()
-        elif isinstance(ia_value, str) and ia_value.strip():
-            ia_identifier = ia_value.strip()
+        ia_identifier = str(ia_value[0]).strip() if isinstance(ia_value, list) and ia_value else None
 
         status = str((item.get("availability") or {}).get("status") or "").lower()
+        ebook_access = str(item.get("ebook_access") or "").lower()
         has_fulltext = bool(item.get("has_fulltext"))
-        source_links = build_source_links(item, "Open Library")
 
-        if "borrow" in status or "borrowable" in status or status == "borrow_available":
-            access = build_access("borrow", "Borrowing is available, but this is not a verified free full-text download.")
-        elif ia_identifier and has_fulltext:
-            source_links.append({"label": "Internet Archive", "url": f"https://archive.org/details/{ia_identifier}"})
-            source_links = list({link["url"]: link for link in source_links}.values())
-            access = build_access("full_text", "Full text is available from Internet Archive.")
+        source_links = []
+        key = item.get("key")
+        if key:
+            source_links.append({"label": "Open Library", "url": f"https://openlibrary.org{key}"})
+
+        # Classification workflow
+        if ebook_access == "public" and has_fulltext:
+            access = build_access("FULL_BOOK_VERIFIED_ONLINE", "Verified public domain or open access edition.")
+            if ia_identifier:
+                source_links.append({"label": "Read on Internet Archive", "url": f"https://archive.org/details/{ia_identifier}"})
+        elif "borrow" in status or ebook_access == "borrowable":
+            access = build_access("AUTHORIZED_BORROWING", "Complete book requires authorized borrowing via Open Library/Internet Archive.")
+        elif ebook_access == "printdisabled":
+            access = build_access("AUTHORIZED_BORROWING", "Book available to borrow for print-disabled users.")
+        elif "preview" in status or ebook_access == "preview":
+            access = build_access("PREVIEW", "Only a short preview or sample is available.")
         elif has_fulltext:
-            access = build_access("full_text", "Full text is available from Open Library.")
-        elif "preview" in status or "limited" in status or status in {"partial", "sample"}:
-            access = build_access("preview", "Preview is available from Open Library.")
+            access = build_access("COMPLETENESS_UNVERIFIED", "Full text flagged, but access rules are not explicitly clear.")
         else:
-            access = build_access("unavailable", "No suitable free full-text version was found from our supported sources.")
+            access = build_access("COMPLETENESS_UNVERIFIED", "No verified complete edition found.")
 
-        result = {
+        results.append({
             "provider": "Open Library",
             "title": title_value,
             "authors": authors,
             "publication_year": item.get("first_publish_year"),
             "cover_url": cover_url,
-            "key": item.get("key"),
-            "edition_key": item.get("edition_key"),
             "source_links": source_links,
             "access": access,
-        }
-        results.append(result)
+        })
     return results
-
-
-async def search_google_books(query_value: str) -> list[dict[str, Any]]:
-    async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
-        try:
-            response = await client.get(
-                GOOGLE_BOOKS_SEARCH_URL,
-                params={"q": query_value, "maxResults": 5},
-            )
-            response.raise_for_status()
-            payload = response.json()
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 429:
-                return []
-            raise
-
-    items = payload.get("items", [])
-    results: list[dict[str, Any]] = []
-    for item in items:
-        volume_info = item.get("volumeInfo") or {}
-        title_value = str(volume_info.get("title") or "").strip()
-        if not title_value:
-            continue
-        authors = normalize_authors(volume_info.get("authors"))
-        access_info = item.get("accessInfo") or {}
-        viewability = str(access_info.get("viewability") or "").upper()
-        access_view_status = str(access_info.get("accessViewStatus") or "").upper()
-        preview_link = access_info.get("webReaderLink") or access_info.get("previewLink")
-        pdf_info = access_info.get("pdf") if isinstance(access_info.get("pdf"), dict) else {}
-        epub_info = access_info.get("epub") if isinstance(access_info.get("epub"), dict) else {}
-        pdf_download_link = pdf_info.get("downloadLink") if isinstance(pdf_info.get("downloadLink"), str) else None
-        epub_download_link = epub_info.get("downloadLink") if isinstance(epub_info.get("downloadLink"), str) else None
-        pdf_access_link = pdf_info.get("acsTokenLink") if isinstance(pdf_info.get("acsTokenLink"), str) else pdf_download_link
-        epub_access_link = epub_info.get("acsTokenLink") if isinstance(epub_info.get("acsTokenLink"), str) else epub_download_link
-
-        pdf_is_available = bool(pdf_info.get("isAvailable"))
-        epub_is_available = bool(epub_info.get("isAvailable"))
-        has_verified_full_text = bool(pdf_access_link or epub_access_link) and (
-            (
-                access_view_status in {"FULL_PUBLIC_DOMAIN", "FULLY_AVAILABLE"}
-                and (pdf_is_available or epub_is_available)
-            )
-            or (viewability == "ALL_PAGES" and (pdf_is_available or epub_is_available))
-        )
-        if has_verified_full_text:
-            access_type = "full_text"
-            note = "Full text is available from Google Books."
-            source_url = pdf_access_link or epub_access_link or str(preview_link or item.get("selfLink") or "")
-        elif viewability in {"PARTIAL", "NO_PAGES", "SAMPLE"} or bool(preview_link):
-            access_type = "preview"
-            note = "Preview is available from Google Books."
-            source_url = str(preview_link or item.get("selfLink") or "")
-        else:
-            access_type = "unavailable"
-            note = "No suitable free full-text version was found from our supported sources."
-            source_url = str(preview_link or item.get("selfLink") or "")
-
-        results.append(
-            {
-                "provider": "Google Books",
-                "title": title_value,
-                "authors": authors,
-                "publication_year": volume_info.get("publishedDate")[:4] if isinstance(volume_info.get("publishedDate"), str) and volume_info.get("publishedDate") else None,
-                "cover_url": (volume_info.get("imageLinks") or {}).get("thumbnail"),
-                "source_links": [{"label": "Google Books", "url": source_url}] if source_url else [],
-                "access": build_access(access_type, note),
-            }
-        )
-    return results
-
 
 async def search_project_gutenberg(query_value: str) -> list[dict[str, Any]]:
-    async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
-        response = await client.get(
-            GUTENDEX_SEARCH_URL,
-            params={"search": query_value, "page": 1},
-        )
+    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+        response = await client.get(GUTENDEX_SEARCH_URL, params={"search": query_value, "page": 1})
         response.raise_for_status()
         payload = response.json()
 
@@ -304,32 +175,33 @@ async def search_project_gutenberg(query_value: str) -> list[dict[str, Any]]:
             continue
         authors = normalize_authors(item.get("authors") or [item.get("author")])
         books_link = item.get("formats") or {}
+        
+        # PG books are definitively full text and free
         html_url = books_link.get("text/html") or books_link.get("text/html; charset=utf-8")
-        if isinstance(html_url, dict):
-            html_url = next(iter(html_url.values()), None)
-        url = html_url or f"https://www.gutenberg.org/ebooks/{item.get('id')}"
-        results.append(
-            {
-                "provider": "Project Gutenberg",
-                "title": title_value,
-                "authors": authors,
-                "publication_year": item.get("bookshelves") and item.get("bookshelves")[0],
-                "cover_url": None,
-                "source_links": [{"label": "Project Gutenberg", "url": str(url)}],
-                "access": build_access("full_text", "Full text is available from Project Gutenberg."),
-            }
-        )
+        epub_url = books_link.get("application/epub+zip")
+        if isinstance(html_url, dict): html_url = next(iter(html_url.values()), None)
+        
+        url = html_url or epub_url or f"https://www.gutenberg.org/ebooks/{item.get('id')}"
+        
+        results.append({
+            "provider": "Project Gutenberg",
+            "title": title_value,
+            "authors": authors,
+            "publication_year": None,
+            "cover_url": books_link.get("image/jpeg"),
+            "source_links": [{"label": "Project Gutenberg Download", "url": str(url)}],
+            "access": build_access("FULL_BOOK_VERIFIED_DOWNLOAD", "Verified complete public domain book available for free download."),
+        })
     return results
 
-
 async def search_internet_archive(query_value: str) -> list[dict[str, Any]]:
-    async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
         response = await client.get(
             INTERNET_ARCHIVE_SEARCH_URL,
             params={
                 "q": query_value,
                 "rows": 5,
-                "fl[]": ["identifier", "title", "creator", "year", "mediatype", "collection"],
+                "fl[]": ["identifier", "title", "creator", "year", "mediatype", "collection", "lending___status", "access-restricted-item"],
                 "output": "json",
             },
         )
@@ -345,35 +217,56 @@ async def search_internet_archive(query_value: str) -> list[dict[str, Any]]:
         creator = item.get("creator") or []
         authors = normalize_authors(creator if isinstance(creator, list) else [creator])
         identifier = item.get("identifier")
-        mediatype = str(item.get("mediatype") or "").lower()
-        collection = item.get("collection") or []
-        has_text = mediatype == "texts" or "texts" in str(collection).lower()
-        if has_text:
-            access_type = "full_text"
-            note = "Full text is available from Internet Archive."
-        else:
-            access_type = "unavailable"
-            note = "No suitable free full-text version was found from our supported sources."
-
         url = f"https://archive.org/details/{identifier}" if identifier else "https://archive.org/"
-        results.append(
-            {
-                "provider": "Internet Archive",
-                "title": title_value,
-                "authors": authors,
-                "publication_year": item.get("year"),
-                "cover_url": None,
-                "source_links": [{"label": "Internet Archive", "url": url}],
-                "access": build_access(access_type, note),
-            }
-        )
+        
+        lending_status = item.get("lending___status", "")
+        restricted = item.get("access-restricted-item", False)
+        
+        if lending_status == "is_lendable":
+            access = build_access("AUTHORIZED_BORROWING", "Authorized borrowing required.")
+        elif restricted:
+            access = build_access("AUTHORIZED_BORROWING", "Access is restricted; borrowing or log-in may be required.")
+        else:
+            access = build_access("FULL_BOOK_VERIFIED_ONLINE", "Verified full text available online.")
+
+        results.append({
+            "provider": "Internet Archive",
+            "title": title_value,
+            "authors": authors,
+            "publication_year": item.get("year"),
+            "cover_url": f"https://archive.org/services/img/{identifier}" if identifier else None,
+            "source_links": [{"label": "Internet Archive", "url": url}],
+            "access": access,
+        })
     return results
 
+# Fallback generator for sources without suitable/open JSON APIs
+def generate_external_search(provider: str, query: str, search_url_template: str) -> dict[str, Any]:
+    url = search_url_template.replace("{query}", urllib.parse.quote(query))
+    return {
+        "provider": provider,
+        "title": f"Search '{query}' on {provider}",
+        "authors": [f"via {provider}"],
+        "publication_year": None,
+        "cover_url": None,
+        "source_links": [{"label": f"Search {provider}", "url": url}],
+        "access": build_access("COMPLETENESS_UNVERIFIED", "Official search link. Completeness varies by result on their site."),
+    }
+
+async def get_external_searches(query: str) -> list[dict[str, Any]]:
+    return [
+        generate_external_search("Standard Ebooks", query, "https://standardebooks.org/ebooks?query={query}"),
+        generate_external_search("ManyBooks", query, "https://manybooks.net/search-book?search={query}"),
+        generate_external_search("Feedbooks Public Domain", query, "https://www.feedbooks.com/catalog/public_domain?query={query}"),
+        generate_external_search("OAPEN", query, "https://library.oapen.org/discover?query={query}"),
+        generate_external_search("Directory of Open Access Books", query, "https://directory.doabooks.org/discover?query={query}"),
+        generate_external_search("OpenStax", query, "https://openstax.org/search?q={query}"),
+        generate_external_search("Open Textbook Library", query, "https://open.umn.edu/opentextbooks/textbooks?term={query}"),
+    ]
 
 async def aggregate_provider_results(query_value: str) -> tuple[list[dict[str, Any]], list[str]]:
     providers = [
         ("Open Library", search_open_library),
-        ("Google Books", search_google_books),
         ("Project Gutenberg", search_project_gutenberg),
         ("Internet Archive", search_internet_archive),
     ]
@@ -393,54 +286,29 @@ async def aggregate_provider_results(query_value: str) -> tuple[list[dict[str, A
             results.extend(provider_value)
 
     unique_results = deduplicate_results(results)
+    unique_results.extend(await get_external_searches(query_value))
     return unique_results, errors
-
 
 @app.get("/")
 def read_root() -> dict[str, str]:
     return {"message": "OpenShelf backend is running."}
 
-
-@app.get("/health")
 @app.get("/api/health")
 def health_check() -> dict[str, str]:
-    return {
-        "status": "ok",
-        "service": "OpenShelf API",
-        "message": "The backend foundation is ready for milestone 2.",
-    }
-
+    return {"status": "ok", "service": "OpenShelf API"}
 
 @app.get("/api/books/search")
 async def search_books(
     q: str | None = Query(default=None, description="Book title or author"),
-    title: str | None = None,
-    author: str | None = None,
 ) -> dict[str, Any]:
-    query_value = (q or title or author or "").strip()
-    if title and author:
-        query_value = f"{title} {author}".strip()
-    elif title:
-        query_value = title.strip()
-    elif author:
-        query_value = author.strip()
-
+    query_value = (q or "").strip()
     if not query_value:
         raise HTTPException(status_code=400, detail="A search query is required.")
 
     try:
         results, provider_errors = await aggregate_provider_results(query_value)
     except Exception as exc:
-        raise HTTPException(
-            status_code=502,
-            detail="The book search service is unavailable right now.",
-        ) from exc
-
-    if not results and provider_errors and len(provider_errors) >= len(SUPPORTED_PROVIDERS):
-        raise HTTPException(
-            status_code=502,
-            detail="The book search service is unavailable right now.",
-        )
+        raise HTTPException(status_code=502, detail="The book search service is unavailable right now.") from exc
 
     return {
         "query": query_value,
@@ -448,3 +316,7 @@ async def search_books(
         "results": results,
         "provider_errors": provider_errors,
     }
+
+@app.post("/api/scan")
+async def scan_pdf(file: UploadFile = File(...)) -> dict[str, Any]:
+    return await process_pdf_upload(file)

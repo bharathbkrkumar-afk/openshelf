@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
 import './App.css'
+import PdfScanner from './PdfScanner'
 
 type SourceLink = {
   label: string
@@ -8,14 +9,14 @@ type SourceLink = {
 }
 
 type AccessInfo = {
-  full_text_available: boolean
-  preview_only: boolean
-  borrow_available: boolean
-  no_verified_full_text: boolean
-  full_text?: boolean
-  preview?: boolean
-  borrow?: boolean
-  note: string
+  is_verified_full_book: boolean;
+  is_borrowable: boolean;
+  is_preview: boolean;
+  is_unverified: boolean;
+  free_download: boolean;
+  read_online: boolean;
+  category: string;
+  note: string;
 }
 
 type BookResult = {
@@ -29,42 +30,8 @@ type BookResult = {
 }
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000'
-const GOOGLE_PDF_SEARCH_URL = 'https://www.google.com/search'
 
-function parseSearchTitleAndAuthor(searchText: string | null | undefined) {
-  const trimmedSearch = searchText?.trim() ?? ''
-  if (!trimmedSearch) {
-    return { title: '', author: '' }
-  }
 
-  const splitPattern = /\s[-—–]\s|\s\|\s/
-  const splitMatch = trimmedSearch.split(splitPattern)
-  if (splitMatch.length >= 2) {
-    const [title, ...rest] = splitMatch
-    return {
-      title: title.trim(),
-      author: rest.join(' ').trim(),
-    }
-  }
-
-  return { title: trimmedSearch, author: '' }
-}
-
-function buildGooglePdfSearchUrl(searchText: string | null | undefined) {
-  const { title, author } = parseSearchTitleAndAuthor(searchText)
-  if (!title) {
-    return null
-  }
-
-  const queryParts = [`"${title}"`]
-  if (author) {
-    queryParts.push(`"${author}"`)
-  }
-  queryParts.push('filetype:pdf')
-
-  const params = new URLSearchParams({ q: queryParts.join(' ') })
-  return `${GOOGLE_PDF_SEARCH_URL}?${params.toString()}`
-}
 
 function App() {
   const [query, setQuery] = useState('')
@@ -72,6 +39,7 @@ function App() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [hasSearched, setHasSearched] = useState(false)
+  const [filter, setFilter] = useState('All Results')
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -84,14 +52,10 @@ function App() {
       return
     }
 
-    const googlePdfUrl = buildGooglePdfSearchUrl(trimmedQuery)
-    if (googlePdfUrl) {
-      window.open(googlePdfUrl, '_blank', 'noopener,noreferrer')
-    }
-
     setLoading(true)
     setError('')
     setHasSearched(true)
+    setFilter('All Results')
 
     try {
       const response = await fetch(
@@ -116,14 +80,29 @@ function App() {
     }
   }
 
+  const filteredBooks = books.filter(book => {
+    const a = book.access
+    if (!a) return filter === 'All Results' || filter === 'Completeness Unverified'
+    
+    switch (filter) {
+      case 'All Results': return true
+      case 'Verified Full Books': return a.is_verified_full_book
+      case 'Free Full-Text Downloads': return a.free_download
+      case 'Read Online': return a.read_online
+      case 'Borrow Full Book': return a.is_borrowable
+      case 'Preview / Partial': return a.is_preview
+      case 'Completeness Unverified': return a.is_unverified
+      default: return true
+    }
+  })
+
   return (
     <main className="app-shell">
       <header className="hero">
         <p className="eyebrow">OpenShelf</p>
         <h1>Find free and legal book options</h1>
         <p className="subtitle">
-          Search by title or author to discover books with legitimate Open Library
-          listings and supported access details.
+          Search by title or author to discover books with legitimate sources and supported access details.
         </p>
       </header>
 
@@ -144,6 +123,8 @@ function App() {
         </button>
       </form>
 
+      <PdfScanner />
+
       {error && <p className="status-message error">{error}</p>}
 
       {hasSearched && !loading && books.length === 0 && !error && (
@@ -152,39 +133,43 @@ function App() {
 
       {loading && <p className="status-message">Loading books...</p>}
 
-      {hasSearched && !loading && query.trim() ? (
-        (() => {
-          const pdfSearchUrl = buildGooglePdfSearchUrl(query)
-          if (!pdfSearchUrl) {
-            return null
-          }
-
-          return (
-            <div className="pdf-search-bar">
-              <p>Leave OpenShelf and open Google to search for public PDF copies in a new tab.</p>
-              <a href={pdfSearchUrl} target="_blank" rel="noreferrer">
-                Find Book PDFs
-              </a>
-            </div>
-          )
-        })()
+      {hasSearched && !loading && books.length > 0 ? (
+        <div className="filters-wrap">
+          <label htmlFor="filter-select">Filter access: </label>
+          <select 
+            id="filter-select" 
+            value={filter} 
+            onChange={e => setFilter(e.target.value)}
+          >
+            <option value="All Results">All Results</option>
+            <option value="Verified Full Books">Verified Full Books</option>
+            <option value="Free Full-Text Downloads">Free Full-Text Downloads</option>
+            <option value="Read Online">Read Online</option>
+            <option value="Borrow Full Book">Borrow Full Book</option>
+            <option value="Preview / Partial">Preview / Partial</option>
+            <option value="Completeness Unverified">Completeness Unverified</option>
+          </select>
+        </div>
       ) : null}
 
       <section className="results-grid" aria-live="polite">
-        {books.map((book, index) => {
+        {filteredBooks.map((book, index) => {
           const access = book.access ?? {
-            full_text_available: false,
-            preview_only: false,
-            borrow_available: false,
-            no_verified_full_text: true,
-            note: 'No verified full-text version was found from our supported sources.',
+            is_verified_full_book: false,
+            is_borrowable: false,
+            is_preview: false,
+            is_unverified: true,
+            free_download: false,
+            read_online: false,
+            category: "COMPLETENESS_UNVERIFIED",
+            note: "No verified full-text version was found from our supported sources."
           }
 
           const accessTags = [
-            access.full_text_available ? 'FULL TEXT' : null,
-            access.preview_only ? 'PREVIEW ONLY' : null,
-            access.borrow_available ? 'BORROW AVAILABLE' : null,
-            access.no_verified_full_text ? 'NO VERIFIED FULL TEXT' : null,
+            access.is_verified_full_book ? 'FULL BOOK — VERIFIED' : null,
+            access.is_borrowable ? 'BORROWABLE FULL BOOK' : null,
+            access.is_preview ? 'PREVIEW / SAMPLE' : null,
+            access.is_unverified ? 'COMPLETENESS UNVERIFIED' : null,
           ].filter(Boolean) as string[]
 
           const primaryLink = book.source_links[0]
@@ -219,19 +204,37 @@ function App() {
                       </span>
                     ))
                   ) : (
-                    <span className="access-pill muted">No verified full-text version was found from our supported sources.</span>
+                    <span className="access-pill muted">COMPLETENESS UNVERIFIED</span>
                   )}
                 </div>
 
-                {access.full_text_available && primaryLink ? (
+                {access.free_download && primaryLink ? (
                   <a className="primary-action" href={primaryLink.url} target="_blank" rel="noreferrer">
-                    Read Full Book
+                    Download Full Book
+                  </a>
+                ) : null}
+                
+                {access.read_online && primaryLink ? (
+                  <a className="primary-action" href={primaryLink.url} target="_blank" rel="noreferrer">
+                    Read Full Book Online
                   </a>
                 ) : null}
 
-                {access.preview_only && primaryLink ? (
+                {access.is_borrowable && primaryLink ? (
+                  <a className="secondary-action" href={primaryLink.url} target="_blank" rel="noreferrer">
+                    Borrow Full Book
+                  </a>
+                ) : null}
+
+                {access.is_preview && primaryLink ? (
                   <a className="secondary-action" href={primaryLink.url} target="_blank" rel="noreferrer">
                     Preview Only
+                  </a>
+                ) : null}
+                
+                {access.is_unverified && primaryLink ? (
+                  <a className="secondary-action" href={primaryLink.url} target="_blank" rel="noreferrer">
+                    Search / View Source
                   </a>
                 ) : null}
 
@@ -253,6 +256,10 @@ function App() {
           )
         })}
       </section>
+      
+      {hasSearched && !loading && filteredBooks.length === 0 && books.length > 0 && (
+         <p className="status-message">No results match this filter. Try selecting 'All Results'.</p>
+      )}
     </main>
   )
 }

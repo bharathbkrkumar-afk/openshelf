@@ -1,56 +1,92 @@
-# Instructions for Building OpenShelf
+# OPENSHELF — COMPLETE PROJECT DEVELOPMENT INSTRUCTIONS
 
-You are building OpenShelf, a free book-discovery website.
+Act as a senior full-stack developer, software architect, security engineer, UI/UX designer, and QA engineer. Your responsibility is to turn the existing OpenShelf repository into a polished, reliable, secure, fully tested book-discovery application.
 
-Before coding:
-1. Read TECHSTACK.md completely.
-2. Inspect the repository and existing files.
-3. Explain the implementation plan briefly.
+## PHASE 1 — AUDIT THE EXISTING PROJECT
+- Inspect the entire repository.
+- Identify what works, what is incomplete, and what must be preserved.
+- Update `TECHSTACK.md` and `ANTIGRAVITY_INSTRUCTIONS.md`.
 
-Build in small, testable milestones.
+## PHASE 2 — APPROVED BOOK SOURCES
+Use these ten sources as the approved book-discovery sources:
+1. Open Library — https://openlibrary.org/
+2. Internet Archive — https://archive.org/
+3. Project Gutenberg — https://www.gutenberg.org/
+4. Standard Ebooks — https://standardebooks.org/
+5. ManyBooks — https://manybooks.net/
+6. Feedbooks Public Domain — https://www.feedbooks.com/catalog/public_domain
+7. OAPEN — https://www.oapen.org/
+8. Directory of Open Access Books — https://www.doabooks.org/
+9. OpenStax — https://openstax.org/
+10. Open Textbook Library — https://open.umn.edu/opentextbooks
 
-## Milestone 1: Project foundation
-- Create a React + Vite + TypeScript frontend.
-- Create a Python FastAPI backend.
-- Provide a clear project folder structure.
-- Add .gitignore files or rules to prevent secrets, virtual environments, caches, and uploaded PDFs from entering Git.
-- Write a README with exact Windows PowerShell setup commands.
+## PHASE 3 — IN-APP BOOK SEARCH
+- Support searches by title, author, ISBN, and subject.
+- Search the approved sources directly inside OpenShelf (no external primary search).
+- Normalize metadata and deduplicate matching editions.
+- Display comprehensive metadata (title, author, cover, year, edition, language, format, source, access type).
 
-## Milestone 2: Book search
-- Integrate the Open Library Search API.
-- Support searches by book title and author.
-- Show book covers when available, title, author, publication information, and source links.
-- Handle empty results, loading states, network failures, and API errors.
-- Clearly label previews, online reading, lending, and downloads.
-- Use only legitimate source links. Never invent URLs or bypass copyright restrictions.
+## PHASE 4 — CRITICAL: FIND COMPLETE BOOKS, NOT SHORT PREVIEWS
+### A. Classify every result
+Use these categories:
+1. FULL BOOK — VERIFIED
+2. COMPLETE BOOK — AUTHORIZED BORROWING REQUIRED
+3. PREVIEW / SAMPLE / PARTIAL TEXT
+4. COMPLETENESS UNVERIFIED
 
-## Milestone 3: PDF safety checks
-- Allow users to select a local PDF for inspection.
-- Validate file size, PDF signature, and file structure.
-- Use pypdf for structural inspection.
-- Calculate a SHA-256 hash.
-- Integrate ClamAV when installed and available.
-- Report whether malware scanning actually ran.
-- Use these statuses when appropriate: No threats detected, Threat detected, Suspicious features found, Scanner unavailable, Could not verify.
-- Explain that no scan guarantees complete safety.
-- Never automatically upload user files to third-party services.
-- Never fetch arbitrary URLs supplied by users.
-- Use safe temporary files and clean them up reliably.
-- Do not serve uploaded files publicly.
+### B. Evidence-based verification
+- Rely on explicit full-text metadata, official download records, table of contents, and document structure.
+- Do not rely on just `.pdf` extension or successful opening.
+- If insufficient evidence, mark as COMPLETENESS UNVERIFIED.
 
-## Milestone 4: Quality and testing
-- Add backend tests for validation, hashing, PDF handling, and scanner-unavailable cases.
-- Test API errors and empty search results.
-- Run available tests and fix errors.
-- Document any dependencies or tools the user must install.
-- Keep the project free to run locally.
+### C. Full-book filters
+- Provide filters: All Results, Verified Full Books, Free Full-Text Downloads, Read Online, Borrow Full Book, Preview / Partial, Completeness Unverified.
+- "Verified Full Books" filter must exclude previews, partial books, and unverified files.
 
-## Working rules
-- Do not use paid APIs or require paid subscriptions.
-- Do not pretend an API, scanner, or test succeeded when it did not.
-- Do not leave fake download links or placeholder functionality presented as complete.
-- Explain commands before asking a beginner to run them.
-- Implement one milestone at a time. Start with Milestone 1, verify it, and then continue.
-- Never commit secrets, API keys, environment files, or user-uploaded PDFs.
+### D. When a complete book cannot be found
+- Do not fill results with short previews. Tell the user no verified complete version was found and offer legitimate alternatives.
 
-Begin by inspecting the repository and implementing Milestone 1.
+## PHASE 5 — PDF DISCOVERY USING FILETYPE:PDF
+- Support targeted searches combining title, author, approved source domains, and `filetype:pdf`.
+- Every PDF candidate must go through the completeness-classification workflow.
+
+## PHASE 6 — LEGAL ACCESS AND PRICE COMPARISON
+- Prioritize legitimate free full-text books.
+- Clearly distinguish free downloads, reading, borrowing, previews, and purchases.
+
+## PHASE 7 — PDF SAFETY CHECKER
+- Validate uploaded file type, PDF signature, and file size.
+- Store temporarily, calculate SHA-256 hashes, use ClamAV when installed.
+- Do not automatically upload to third-party services.
+- Provide clear results and avoid absolute safety guarantees.
+
+## PHASE 8 — SECURITY, PRIVACY, AND PERFORMANCE
+- Validate inputs, set timeouts, handle concurrency.
+- Ensure secure temporary-file handling, no hardcoded secrets, appropriate CORS.
+- Prevent SSRF vulnerabilities.
+
+## PHASE 9 — PROFESSIONAL UI/UX
+- Responsive desktop/mobile layouts.
+- Distinct access labels, accessible contrast, loading states.
+- Preserve existing working behavior and visual identity where appropriate.
+
+## PHASE 10 — AUTOMATED TESTING
+- Update automated tests for search, integrations, timeouts, empty responses, duplicates, invalid files, and UI states.
+
+## PHASE 11 — DOCUMENTATION AND REPOSITORY QUALITY
+- Update `TECHSTACK.md`, `ANTIGRAVITY_INSTRUCTIONS.md`, `README.md`, `.env.example`, `.gitignore`.
+- Provide exact Windows PowerShell commands.
+
+## PHASE 12 — IMPLEMENTATION ORDER
+1. Audit and update documentation.
+2. Verify source integrations.
+3. Implement backend book search for 10 sources.
+4. Add source adapters.
+5. Implement completeness classification.
+6. Add search interface and filters.
+7. Preserve and harden PDF safety checker.
+8. Add error handling and security.
+9. Add tests.
+10. Improve UI.
+11. Update README.
+12. Verify functionality.
